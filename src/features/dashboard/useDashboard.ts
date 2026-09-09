@@ -97,6 +97,14 @@ export function useDashboard() {
   const [identityOpen, setIdentityOpen] = useState(false);
   const [authorizationOpen, setAuthorizationOpen] = useState(false);
   const syncingRef = useRef(false);
+  const sessionEpochRef = useRef(0);
+  const sessionActiveRef = useRef(true);
+  const disconnectingRef = useRef(false);
+
+  useEffect(() => () => {
+    sessionEpochRef.current += 1;
+    syncingRef.current = false;
+  }, []);
 
   const visiblePayload = useMemo(() => {
     const hiddenIds = new Set(hiddenProjectIds);
@@ -127,15 +135,22 @@ export function useDashboard() {
       setError("浏览器预览使用演示数据；请在 Tauri 桌面 App 中连接 ptrace。");
       return;
     }
-    if (syncingRef.current) return;
+    if (syncingRef.current || disconnectingRef.current) return;
+    const sessionEpoch = sessionEpochRef.current;
+    const isCurrentSession = () => sessionEpoch === sessionEpochRef.current && sessionActiveRef.current;
     syncingRef.current = true;
+    sessionActiveRef.current = true;
     setError("");
     setAuthorizationOpen(false);
     setState(mode === "live" ? "syncing" : "connecting");
     try {
       const previousPayload = mode === "cache" || mode === "live" ? payload : null;
       const { loadPtracePayload } = await import("../../mcp/ptraceApi");
-      const livePayload = await loadPtracePayload(() => setAuthorizationOpen(true));
+      if (!isCurrentSession()) return;
+      const livePayload = await loadPtracePayload(() => {
+        if (isCurrentSession()) setAuthorizationOpen(true);
+      });
+      if (!isCurrentSession()) return;
       setPayload(livePayload);
       const cacheSaved = savePayloadCache(livePayload);
       setMode("live");
@@ -145,25 +160,29 @@ export function useDashboard() {
       if (!identityId || !nextSnapshot.assignees.some((person) => person.id === identityId)) {
         setIdentityOpen(true);
       } else {
-        await notifyNewAssignments(previousPayload, livePayload, identityId, hiddenProjectIds);
+        await notifyNewAssignments(previousPayload, livePayload, identityId, hiddenProjectIds, isCurrentSession);
       }
     } catch (reason) {
+      if (!isCurrentSession()) return;
       setState("error");
       setAuthorizationOpen(false);
       setError(dashboardErrorMessage(reason));
     } finally {
-      syncingRef.current = false;
+      if (sessionEpoch === sessionEpochRef.current) syncingRef.current = false;
     }
   }, [hiddenProjectIds, identityId, mode, payload]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
+    const sessionEpoch = sessionEpochRef.current;
+    let disposed = false;
     import("../../mcp/oauthProvider")
       .then(({ hasStoredPtraceSession }) => hasStoredPtraceSession())
       .then((hasSession) => {
-        if (hasSession) void sync();
+        if (hasSession && !disposed && sessionEpoch === sessionEpochRef.current && sessionActiveRef.current) void sync();
       })
       .catch(() => undefined);
+    return () => { disposed = true; };
   }, []); // The initial session check intentionally runs once.
 
   useEffect(() => {
@@ -174,10 +193,12 @@ export function useDashboard() {
     const scheduleNext = () => {
       timer = window.setTimeout(async () => {
         const now = new Date();
+        const sessionEpoch = sessionEpochRef.current;
         try {
-          if (isAutoSyncTime(now)) {
+          if (!disposed && sessionActiveRef.current && isAutoSyncTime(now)) {
             const { hasStoredPtraceSession } = await import("../../mcp/oauthProvider");
-            if (await hasStoredPtraceSession()) await sync();
+            if (await hasStoredPtraceSession()
+              && !disposed && sessionActiveRef.current && sessionEpoch === sessionEpochRef.current) await sync();
           }
         } catch {
           // Scheduled sync failures are surfaced by sync; session checks remain silent.
@@ -216,15 +237,31 @@ export function useDashboard() {
   }, [payload.products]);
 
   const disconnect = useCallback(async () => {
-    if (isTauriRuntime()) {
-      const { clearStoredPtraceSession } = await import("../../mcp/oauthProvider");
-      await clearStoredPtraceSession();
-    }
-    window.localStorage.removeItem(CACHE_KEY);
+    if (disconnectingRef.current) return;
+    disconnectingRef.current = true;
+    const sessionEpoch = ++sessionEpochRef.current;
+    sessionActiveRef.current = false;
+    syncingRef.current = false;
     setPayload(demoPayload);
     setMode("demo");
     setState("idle");
     setError("");
+    setAuthorizationOpen(false);
+    setIdentityOpen(false);
+    try {
+      window.localStorage.removeItem(CACHE_KEY);
+      if (isTauriRuntime()) {
+        const { clearStoredPtraceSession } = await import("../../mcp/oauthProvider");
+        await clearStoredPtraceSession();
+      }
+    } catch (reason) {
+      if (sessionEpoch === sessionEpochRef.current) {
+        setState("error");
+        setError(`断开连接失败：${dashboardErrorMessage(reason)}`);
+      }
+    } finally {
+      if (sessionEpoch === sessionEpochRef.current) disconnectingRef.current = false;
+    }
   }, []);
 
   return {

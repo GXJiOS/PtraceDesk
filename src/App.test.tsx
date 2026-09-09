@@ -24,9 +24,10 @@ const {
   requestPermissionMock,
   sendNotificationMock,
   hasStoredSessionMock,
+  clearStoredSessionMock,
 } = vi.hoisted(() => ({
   testClock: { now: "2026-08-11T10:00:00+08:00" },
-  loadPtracePayloadMock: vi.fn<() => Promise<PtracePayload>>(async () => ({
+  loadPtracePayloadMock: vi.fn<(onAuthorizationStarted?: () => void) => Promise<PtracePayload>>(async () => ({
     products: [],
     workitems: [],
     syncedAt: "2026-08-10T12:00:00+08:00",
@@ -39,6 +40,7 @@ const {
   requestPermissionMock: vi.fn(async () => "granted" as NotificationPermission),
   sendNotificationMock: vi.fn(),
   hasStoredSessionMock: vi.fn(async () => false),
+  clearStoredSessionMock: vi.fn(async () => undefined),
 }));
 
 vi.mock("@tauri-apps/plugin-notification", () => ({
@@ -49,7 +51,7 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 
 vi.mock("./mcp/oauthProvider", () => ({
   hasStoredPtraceSession: hasStoredSessionMock,
-  clearStoredPtraceSession: vi.fn(async () => undefined),
+  clearStoredPtraceSession: clearStoredSessionMock,
 }));
 
 vi.mock("./mcp/ptraceApi", () => ({
@@ -75,6 +77,7 @@ beforeEach(() => {
   requestPermissionMock.mockReset().mockResolvedValue("granted");
   sendNotificationMock.mockReset();
   hasStoredSessionMock.mockReset().mockResolvedValue(false);
+  clearStoredSessionMock.mockReset().mockResolvedValue(undefined);
   loadPtraceWorkitemMock.mockReset();
   loadCommentsMock.mockReset().mockResolvedValue([]);
   loadActivitiesMock.mockReset().mockResolvedValue({ items: [], statuses: [] });
@@ -1430,5 +1433,181 @@ describe("PtraceDesk core interactions", () => {
     const user = userEvent.setup();
     await user.selectOptions(screen.getByLabelText("项目范围"), "project-aurora");
     expect(window.localStorage.getItem("ptracedesk-quick-panel-v1")).toBeNull();
+  });
+});
+
+describe("dashboard disconnection", () => {
+  const cacheKey = "ptracedesk-data-cache-v1";
+  const baseline: PtracePayload = {
+    products: [{ id: "session-project", name: "会话测试项目" }],
+    workitems: [],
+    syncedAt: "2026-09-09T09:00:00+08:00",
+  };
+  const live: PtracePayload = {
+    ...baseline,
+    workitems: [{ id: "session-item", productId: "session-project", subject: "旧会话工单", assignedToId: "user-me", creatorId: "other" }],
+  };
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+    return { promise, resolve, reject };
+  }
+
+  beforeEach(() => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    window.localStorage.setItem("ptracedesk-identity-v1", "user-me");
+    window.localStorage.setItem(cacheKey, JSON.stringify(baseline));
+  });
+
+  it.each(["success", "failure"])("ignores a late sync %s and authorization callback after disconnect", async (outcome) => {
+    const pending = deferred<PtracePayload>();
+    let onAuthorizationStarted: (() => void) | undefined;
+    loadPtracePayloadMock.mockImplementationOnce((callback) => {
+      onAuthorizationStarted = callback;
+      return pending.promise;
+    });
+    const { result } = renderHook(() => useDashboard());
+    let inFlight!: Promise<void>;
+    act(() => { inFlight = result.current.sync(); });
+    await waitFor(() => expect(loadPtracePayloadMock).toHaveBeenCalledTimes(1));
+    await act(async () => { await result.current.disconnect(); });
+    await act(async () => {
+      onAuthorizationStarted?.();
+      if (outcome === "success") pending.resolve(live);
+      else pending.reject(new Error("旧同步错误"));
+      await inFlight;
+    });
+    expect(result.current.mode).toBe("demo");
+    expect(result.current.state).toBe("idle");
+    expect(result.current.error).toBe("");
+    expect(result.current.authorizationOpen).toBe(false);
+    expect(result.current.identityOpen).toBe(false);
+    expect(result.current.snapshot.items.some((item) => item.id === "session-item")).toBe(false);
+    expect(window.localStorage.getItem(cacheKey)).toBeNull();
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the new sync locked when an old request finishes after reconnecting", async () => {
+    const oldRequest = deferred<PtracePayload>();
+    const newRequest = deferred<PtracePayload>();
+    loadPtracePayloadMock.mockImplementationOnce(() => oldRequest.promise).mockImplementationOnce(() => newRequest.promise);
+    const { result } = renderHook(() => useDashboard());
+    let oldSync!: Promise<void>;
+    act(() => { oldSync = result.current.sync(); });
+    await waitFor(() => expect(loadPtracePayloadMock).toHaveBeenCalledTimes(1));
+    await act(async () => { await result.current.disconnect(); });
+    let newSync!: Promise<void>;
+    act(() => { newSync = result.current.sync(); });
+    await waitFor(() => expect(loadPtracePayloadMock).toHaveBeenCalledTimes(2));
+    await act(async () => { oldRequest.resolve(live); await oldSync; });
+    expect(result.current.mode).toBe("demo");
+    expect(result.current.state).toBe("connecting");
+    await act(async () => { await result.current.sync(); });
+    expect(loadPtracePayloadMock).toHaveBeenCalledTimes(2);
+    await act(async () => { newRequest.resolve(live); await newSync; });
+    expect(result.current.mode).toBe("live");
+    expect(result.current.state).toBe("ready");
+    expect(JSON.parse(window.localStorage.getItem(cacheKey)!).workitems[0].id).toBe("session-item");
+  });
+
+  it("isolates old requests and blocks new syncs while credentials are being cleared", async () => {
+    const pending = deferred<PtracePayload>();
+    const clearing = deferred<undefined>();
+    clearStoredSessionMock.mockImplementationOnce(() => clearing.promise);
+    loadPtracePayloadMock.mockImplementationOnce(() => pending.promise).mockResolvedValue(live);
+    const { result } = renderHook(() => useDashboard());
+    let syncing!: Promise<void>;
+    act(() => { syncing = result.current.sync(); });
+    await waitFor(() => expect(loadPtracePayloadMock).toHaveBeenCalledTimes(1));
+    let disconnecting!: Promise<void>;
+    act(() => { disconnecting = result.current.disconnect(); });
+    await waitFor(() => expect(clearStoredSessionMock).toHaveBeenCalledTimes(1));
+    expect(window.localStorage.getItem(cacheKey)).toBeNull();
+    await act(async () => { pending.resolve(live); await syncing; await result.current.sync(); });
+    expect(loadPtracePayloadMock).toHaveBeenCalledTimes(1);
+    expect(result.current.mode).toBe("demo");
+    await act(async () => { clearing.resolve(undefined); await disconnecting; });
+    await act(async () => { await result.current.sync(); });
+    expect(loadPtracePayloadMock).toHaveBeenCalledTimes(2);
+    expect(result.current.mode).toBe("live");
+  });
+
+  it("reports credential-clear failure and allows disconnection to be retried", async () => {
+    clearStoredSessionMock.mockRejectedValueOnce(new Error("钥匙串不可用"));
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(hasStoredSessionMock).toHaveBeenCalledTimes(1));
+    await act(async () => { await result.current.disconnect(); });
+    expect(result.current.mode).toBe("demo");
+    expect(result.current.state).toBe("error");
+    expect(result.current.error).toBe("断开连接失败：钥匙串不可用");
+    expect(window.localStorage.getItem(cacheKey)).toBeNull();
+    await act(async () => { await result.current.disconnect(); });
+    expect(clearStoredSessionMock).toHaveBeenCalledTimes(2);
+    expect(result.current.state).toBe("idle");
+    expect(result.current.error).toBe("");
+  });
+
+  it("ignores a launch session check that finishes after disconnect", async () => {
+    const sessionCheck = deferred<boolean>();
+    hasStoredSessionMock.mockImplementationOnce(() => sessionCheck.promise);
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(hasStoredSessionMock).toHaveBeenCalledTimes(1));
+    await act(async () => { await result.current.disconnect(); });
+    await act(async () => { sessionCheck.resolve(true); await sessionCheck.promise; });
+    expect(loadPtracePayloadMock).not.toHaveBeenCalled();
+    expect(result.current.mode).toBe("demo");
+    expect(window.localStorage.getItem(cacheKey)).toBeNull();
+  });
+
+  it("ignores delayed scheduled session checks and keeps automatic sync off after disconnect", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 8, 9, 9, 15, 0));
+    const callbacks: Array<() => Promise<void>> = [];
+    const originalSetTimeout = window.setTimeout.bind(window);
+    const timer = vi.spyOn(window, "setTimeout").mockImplementation((handler, delay, ...args) => {
+      if (typeof handler === "function" && typeof delay === "number" && delay >= 60_000) {
+        callbacks.push(handler as () => Promise<void>);
+        return -callbacks.length as unknown as ReturnType<typeof window.setTimeout>;
+      }
+      return originalSetTimeout(handler, delay, ...args) as unknown as ReturnType<typeof window.setTimeout>;
+    });
+    const sessionCheck = deferred<boolean>();
+    hasStoredSessionMock.mockResolvedValueOnce(false).mockImplementationOnce(() => sessionCheck.promise).mockResolvedValue(true);
+    const { result, unmount } = renderHook(() => useDashboard());
+    try {
+      await waitFor(() => expect(hasStoredSessionMock).toHaveBeenCalledTimes(1));
+      let scheduled!: Promise<void>;
+      act(() => { scheduled = callbacks[callbacks.length - 1](); });
+      await waitFor(() => expect(hasStoredSessionMock).toHaveBeenCalledTimes(2));
+      await act(async () => { await result.current.disconnect(); });
+      await act(async () => { sessionCheck.resolve(true); await scheduled; });
+      await act(async () => { await callbacks[callbacks.length - 1](); });
+      expect(hasStoredSessionMock).toHaveBeenCalledTimes(2);
+      expect(loadPtracePayloadMock).not.toHaveBeenCalled();
+      expect(window.localStorage.getItem(cacheKey)).toBeNull();
+    } finally {
+      unmount();
+      timer.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops pending assignment notifications when permission completes after disconnect", async () => {
+    const permission = deferred<NotificationPermission>();
+    isPermissionGrantedMock.mockResolvedValue(false);
+    requestPermissionMock.mockImplementationOnce(() => permission.promise);
+    loadPtracePayloadMock.mockResolvedValue(live);
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(requestPermissionMock).toHaveBeenCalledTimes(1));
+    let syncing!: Promise<void>;
+    act(() => { syncing = result.current.sync(); });
+    await waitFor(() => expect(result.current.mode).toBe("live"));
+    await act(async () => { await result.current.disconnect(); });
+    await act(async () => { permission.resolve("granted"); await syncing; });
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    expect(result.current.mode).toBe("demo");
+    expect(window.localStorage.getItem(cacheKey)).toBeNull();
   });
 });

@@ -80,11 +80,16 @@ export function ensureAssignmentNotificationPermission(): Promise<boolean> {
   return permissionCheckInFlight;
 }
 
-export async function sendAssignmentNotifications(assignments: readonly NewAssignment[]) {
-  if (assignments.length === 0 || !await ensureAssignmentNotificationPermission()) return 0;
+export async function sendAssignmentNotifications(
+  assignments: readonly NewAssignment[],
+  isCurrentSession: () => boolean = () => true,
+) {
+  if (assignments.length === 0 || !isCurrentSession()
+    || !await ensureAssignmentNotificationPermission() || !isCurrentSession()) return 0;
 
   try {
     const { sendNotification } = await import("@tauri-apps/plugin-notification");
+    if (!isCurrentSession()) return 0;
     assignments.forEach(({ item, creatorName, projectName }) => {
       const displayNo = item.workitemNo?.trim() || `ID ${item.id}`;
       sendNotification({
@@ -103,7 +108,8 @@ export async function notifyNewAssignments(
   next: PtracePayload,
   identityId: string,
   hiddenProjectIds: readonly string[] = [],
+  isCurrentSession: () => boolean = () => true,
 ) {
   const assignments = findNewAssignments(previous, next, identityId, hiddenProjectIds);
-  return sendAssignmentNotifications(assignments);
+  return sendAssignmentNotifications(assignments, isCurrentSession);
 }
