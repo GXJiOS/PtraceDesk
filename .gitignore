@@ -1,0 +1,31 @@
+# Dependencies and generated build files
+/node_modules/
+/dist/
+/distribution/
+/src-tauri/target/
+/src-tauri/gen/
+
+# Local configuration, credentials, and agent/browser state
+/.npmrc
+/.env
+/.env.*
+!/.env.example
+/local.mk
+/.gstack/
+/.playwright-mcp/
+/.codex/
+/.agents/
+/.claude/
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+.DS_Store
+
+# Keep the selected design references and current icon master
+/design/*
+!/design/reference-dashboard.png
+!/design/gantt-reference.png
+!/design/app-icon-v3-full-bleed.png
+/design-qa.md
