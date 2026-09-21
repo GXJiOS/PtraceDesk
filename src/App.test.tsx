@@ -880,7 +880,7 @@ describe("PtraceDesk core interactions", () => {
     expect(screen.getByText("今天要推进什么")).toBeTruthy();
   });
 
-  it.each(["我的工单", "别人指派的", "我指派的"])("filters %s by parent sprint together with status, type, and search", async (destination) => {
+  it.each(["我的工单", "别人指派的", "我指派的"])("filters %s by parent and child sprint together with status, type, and search", async (destination) => {
     const user = userEvent.setup();
     const outgoing = destination === "我指派的";
     const base = {
@@ -910,6 +910,7 @@ describe("PtraceDesk core interactions", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: destination }));
     const parentFilter = screen.getByRole("combobox", { name: "父迭代" });
+    const childFilter = screen.getByRole("combobox", { name: "子迭代" });
     const workitemList = screen.getByRole("tabpanel");
     const expectStatusCounts = (counts: number[]) => {
       expect(screen.getAllByRole("tab").map((tab) => Number(tab.querySelector("span")?.textContent))).toEqual(counts);
@@ -923,6 +924,20 @@ describe("PtraceDesk core interactions", () => {
     expect(within(workitemList).getByText("第二子迭代缺陷")).toBeTruthy();
     expect(within(workitemList).queryByText("其他父迭代任务")).toBeNull();
     expect(within(workitemList).queryByText("其他项目同名迭代任务")).toBeNull();
+
+    await user.selectOptions(childFilter, within(childFilter).getByRole("option", { name: "P0" }));
+    expectStatusCounts([1, 1, 0, 0, 0]);
+    expect(within(workitemList).getByText("第一子迭代任务")).toBeTruthy();
+    expect(within(workitemList).queryByText("第二子迭代缺陷")).toBeNull();
+    await user.selectOptions(parentFilter, within(parentFilter).getByRole("option", { name: "2.0.0" }));
+    expect((childFilter as HTMLSelectElement).value).toBe("all");
+    expect(within(childFilter).queryByRole("option", { name: "P0" })).toBeNull();
+    await user.selectOptions(parentFilter, within(parentFilter).getByRole("option", { name: "项目 A · 1.0.0" }));
+    await user.selectOptions(childFilter, "none");
+    expectStatusCounts([1, 0, 0, 1, 0]);
+    expect(within(workitemList).getByText("已完成任务")).toBeTruthy();
+    await user.selectOptions(childFilter, "all");
+    expectStatusCounts([3, 2, 0, 1, 0]);
 
     await user.click(screen.getByRole("tab", { name: /待处理/ }));
     expectStatusCounts([3, 2, 0, 1, 0]);
@@ -944,6 +959,7 @@ describe("PtraceDesk core interactions", () => {
     expectStatusCounts([0, 0, 0, 0, 0]);
     await user.click(screen.getByRole("button", { name: "清空搜索" }));
     await user.selectOptions(parentFilter, "all");
+    expect((childFilter as HTMLSelectElement).value).toBe("all");
     expectStatusCounts([7, 6, 0, 1, 0]);
     expect(within(workitemList).getByText("其他父迭代任务")).toBeTruthy();
 
@@ -954,6 +970,7 @@ describe("PtraceDesk core interactions", () => {
       ["项目 B · 1.0.0", "其他项目同名迭代任务"],
     ]) {
       await user.selectOptions(parentFilter, within(parentFilter).getByRole("option", { name: option }));
+      expect(within(childFilter).queryByRole("option", { name: "P0" })).toBeNull();
       expectStatusCounts([1, 1, 0, 0, 0]);
       expect(workitemList.querySelectorAll("article.work-row")).toHaveLength(1);
       expect(within(workitemList).getByText(subject)).toBeTruthy();
@@ -961,9 +978,14 @@ describe("PtraceDesk core interactions", () => {
 
     await user.selectOptions(screen.getByLabelText("项目范围"), "project-a");
     expect((parentFilter as HTMLSelectElement).value).toBe("all");
+    expect((childFilter as HTMLSelectElement).value).toBe("all");
     expectStatusCounts([6, 5, 0, 1, 0]);
     expect(within(parentFilter).queryByRole("option", { name: "项目 B · 1.0.0" })).toBeNull();
     expect(within(workitemList).getByText("第一子迭代任务")).toBeTruthy();
+    await user.selectOptions(childFilter, within(childFilter).getByRole("option", { name: "P0" }));
+    await user.selectOptions(screen.getByLabelText("项目范围"), "project-b");
+    expect((childFilter as HTMLSelectElement).value).toBe("all");
+    expect(within(childFilter).queryByRole("option", { name: "P0" })).toBeNull();
   });
 
   it("shows every filtered workitem, resets scrolling on filter changes, and clears a parent missing after refresh", async () => {
@@ -976,12 +998,15 @@ describe("PtraceDesk core interactions", () => {
         subject: `任务 ${index}`,
         sprintParentId: index < 21 ? "parent-a" : "parent-b",
         sprintParentName: index < 21 ? "1.0.0" : "2.0.0",
+        sprintId: index < 10 ? "child-a" : index < 21 ? "child-b" : "child-c",
+        sprintName: index < 10 ? "P0" : index < 21 ? "P1" : "P2",
       })),
       syncedAt: "2026-09-07T10:00:00+08:00",
     }).items;
     const callbacks = { onFocus: vi.fn(), onDetails: vi.fn() };
     const { rerender } = render(<MyWorkitems items={items} {...callbacks} />);
     const parentFilter = screen.getByRole("combobox", { name: "父迭代" });
+    const childFilter = screen.getByRole("combobox", { name: "子迭代" });
     const list = screen.getByRole("tabpanel");
     expect(list.querySelectorAll("article.work-row")).toHaveLength(42);
     expect(within(list).getByText("任务 41")).toBeTruthy();
@@ -992,8 +1017,13 @@ describe("PtraceDesk core interactions", () => {
     expect(list.scrollTop).toBe(0);
     expect(screen.getByRole("tab", { name: /全部\s*21/ })).toBeTruthy();
     expect(list.querySelectorAll("article.work-row")).toHaveLength(21);
+    list.scrollTop = 240;
+    await user.selectOptions(childFilter, within(childFilter).getByRole("option", { name: "P0" }));
+    expect(list.scrollTop).toBe(0);
+    expect(list.querySelectorAll("article.work-row")).toHaveLength(10);
     list.scrollTop = 150;
     await user.selectOptions(parentFilter, "none");
+    expect((childFilter as HTMLSelectElement).value).toBe("all");
     expect(list.scrollTop).toBe(0);
     expect(list.querySelectorAll("article.work-row")).toHaveLength(0);
     await user.selectOptions(parentFilter, within(parentFilter).getByRole("option", { name: "1.0.0" }));
@@ -1001,6 +1031,30 @@ describe("PtraceDesk core interactions", () => {
     expect((parentFilter as HTMLSelectElement).value).toBe("all");
     expect(list.querySelectorAll("article.work-row")).toHaveLength(21);
     expect(within(parentFilter).queryByRole("option", { name: "1.0.0" })).toBeNull();
+  });
+
+  it("keeps name-only child iterations distinct across projects and parents", async () => {
+    const user = userEvent.setup();
+    const items = buildDashboardSnapshot({
+      products: [{ id: "project-a", name: "项目 A" }, { id: "project-b", name: "项目 B" }],
+      workitems: [
+        { id: "a-p0", productId: "project-a", subject: "A 的 P0", sprintParentId: "parent-a", sprintParentName: "1.0.0", sprintName: "P0" },
+        { id: "a-other-p0", productId: "project-a", subject: "A 另一父迭代的 P0", sprintParentId: "parent-b", sprintParentName: "2.0.0", sprintName: "P0" },
+        { id: "b-p0", productId: "project-b", subject: "B 的 P0", sprintParentId: "parent-a", sprintParentName: "1.0.0", sprintName: "P0" },
+        { id: "parent-direct", productId: "project-a", subject: "父迭代直属工单", sprintId: "parent-a", sprintName: "1.0.0", sprintParentId: "parent-a", sprintParentName: "1.0.0" },
+      ],
+      syncedAt: "2026-09-07T10:00:00+08:00",
+    }).items;
+    render(<MyWorkitems items={items} onFocus={vi.fn()} onDetails={vi.fn()} />);
+    const childFilter = screen.getByRole("combobox", { name: "子迭代" });
+    const list = screen.getByRole("tabpanel");
+
+    await user.selectOptions(childFilter, within(childFilter).getByRole("option", { name: "项目 A · 1.0.0 · P0" }));
+    expect(list.querySelectorAll("article.work-row")).toHaveLength(1);
+    expect(within(list).getByText("A 的 P0")).toBeTruthy();
+    await user.selectOptions(childFilter, "none");
+    expect(within(list).getByText("父迭代直属工单")).toBeTruthy();
+    expect(list.querySelectorAll("article.work-row")).toHaveLength(1);
   });
 
   it.each(["我的工单", "别人指派的", "我指派的"])("sorts %s by creation time with the newest first", async (destination) => {

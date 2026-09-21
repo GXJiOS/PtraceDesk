@@ -7,6 +7,7 @@ import { WorkItemRow } from "./WorkItemRow";
 type StatusFilter = "all" | StatusKind;
 
 const NO_PARENT_SPRINT = "none";
+const NO_CHILD_SPRINT = "none";
 const statusTabs: Array<{ id: StatusFilter; label: string }> = [
   { id: "all", label: "全部" },
   { id: "todo", label: "待处理" },
@@ -29,6 +30,17 @@ function parentSprintKey(item: DashboardItem) {
   if (item.sprintParentId) return JSON.stringify([item.productId, "id", item.sprintParentId]);
   if (item.sprintParentName) return JSON.stringify([item.productId, "name", item.sprintParentName]);
   return NO_PARENT_SPRINT;
+}
+
+function childSprintKey(item: DashboardItem) {
+  if (!item.sprintParentId && !item.sprintParentName) return NO_CHILD_SPRINT;
+  if (item.sprintId && item.sprintId !== item.sprintParentId) {
+    return JSON.stringify([item.productId, "id", item.sprintId]);
+  }
+  if (item.sprintName && item.sprintName !== item.sprintParentName && !item.sprintId) {
+    return JSON.stringify([item.productId, parentSprintKey(item), "name", item.sprintName]);
+  }
+  return NO_CHILD_SPRINT;
 }
 
 function compareItemsByCreationTimeDesc(a: DashboardItem, b: DashboardItem) {
@@ -54,6 +66,7 @@ export function MyWorkitems({
   const [status, setStatus] = useState<StatusFilter>("all");
   const [type, setType] = useState("all");
   const [parentSprint, setParentSprint] = useState("all");
+  const [childSprint, setChildSprint] = useState("all");
   const [search, setSearch] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -88,22 +101,56 @@ export function MyWorkitems({
     }).sort((a, b) => a.label.localeCompare(b.label, "zh-CN", { numeric: true }));
   }, [items]);
 
+  const childSprintOptions = useMemo(() => {
+    const options = new Map<string, { value: string; name: string; productName: string; parentName: string; id?: string | null }>();
+    for (const item of items) {
+      if (parentSprint !== "all" && parentSprintKey(item) !== parentSprint) continue;
+      const value = childSprintKey(item);
+      if (value === NO_CHILD_SPRINT) continue;
+      if (!options.has(value) || item.sprintName) {
+        options.set(value, {
+          value,
+          name: item.sprintName || `迭代 ${item.sprintId}`,
+          productName: item.productName,
+          parentName: item.sprintParentName || `迭代 ${item.sprintParentId}`,
+          id: item.sprintId,
+        });
+      }
+    }
+    const values = [...options.values()];
+    return values.map((option) => {
+      const sameName = values.filter((candidate) => candidate.name === option.name);
+      const sameProject = sameName.filter((candidate) => candidate.productName === option.productName);
+      const sameParent = sameProject.filter((candidate) => candidate.parentName === option.parentName);
+      const label = sameProject.length > 1
+        ? `${option.productName} · ${option.parentName} · ${option.name}`
+        : sameName.length > 1 ? `${option.productName} · ${option.name}` : option.name;
+      return {
+        value: option.value,
+        label: sameParent.length > 1 && option.id ? `${label} (ID ${option.id})` : label,
+      };
+    }).sort((a, b) => a.label.localeCompare(b.label, "zh-CN", { numeric: true }));
+  }, [items, parentSprint]);
+
   useEffect(() => {
     if (type !== "all" && !typeOptions.includes(type)) setType("all");
     if (parentSprint !== "all" && parentSprint !== NO_PARENT_SPRINT
       && !parentSprintOptions.some((option) => option.value === parentSprint)) setParentSprint("all");
-  }, [items, type, typeOptions, parentSprint, parentSprintOptions]);
+    if (childSprint !== "all" && childSprint !== NO_CHILD_SPRINT
+      && !childSprintOptions.some((option) => option.value === childSprint)) setChildSprint("all");
+  }, [items, type, typeOptions, parentSprint, parentSprintOptions, childSprint, childSprintOptions]);
 
   const matchingItems = useMemo(() => {
     const normalizedSearch = search.trim().toLocaleLowerCase();
     return items
       .filter((item) => type === "all" || item.typeLabel === type)
       .filter((item) => parentSprint === "all" || parentSprintKey(item) === parentSprint)
+      .filter((item) => childSprint === "all" || childSprintKey(item) === childSprint)
       .filter((item) => !normalizedSearch
         || item.displayNo.toLocaleLowerCase().includes(normalizedSearch)
         || item.id.toLocaleLowerCase().includes(normalizedSearch)
         || item.subject.toLocaleLowerCase().includes(normalizedSearch));
-  }, [items, search, type, parentSprint]);
+  }, [items, search, type, parentSprint, childSprint]);
 
   const counts = useMemo(() => ({
     all: matchingItems.length,
@@ -120,7 +167,7 @@ export function MyWorkitems({
 
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [items, status, type, parentSprint, search, sortBy]);
+  }, [items, status, type, parentSprint, childSprint, search, sortBy]);
 
   function chooseStatus(nextStatus: StatusFilter) {
     setStatus(nextStatus);
@@ -136,6 +183,7 @@ export function MyWorkitems({
 
   function chooseParentSprint(nextParentSprint: string) {
     setParentSprint(nextParentSprint);
+    setChildSprint("all");
   }
 
   return (
@@ -205,6 +253,20 @@ export function MyWorkitems({
                 {parentSprintOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
               </select>
             </label>
+            <label className="type-filter" style={{ width: 230 }}>
+              <FunnelSimple size={16} />
+              <span style={{ whiteSpace: "nowrap" }}>子迭代</span>
+              <select
+                aria-label="子迭代"
+                value={childSprint}
+                title={childSprintOptions.find((option) => option.value === childSprint)?.label}
+                onChange={(event) => setChildSprint(event.target.value)}
+              >
+                <option value="all">全部子迭代</option>
+                <option value={NO_CHILD_SPRINT}>未设置子迭代</option>
+                {childSprintOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+              </select>
+            </label>
           </div>
         </div>
 
@@ -215,7 +277,7 @@ export function MyWorkitems({
             <div className="workitems-empty">
               <CheckCircle size={30} weight="duotone" />
               <strong>{search.trim() ? "未找到匹配的工单" : `当前没有${statusTabs.find((tab) => tab.id === status)?.label}工单`}</strong>
-              <span>{search.trim() ? "可输入 PT 单号、内部 ID 或标题关键词。" : "可以切换状态、工单类型或父迭代查看其他内容。"}</span>
+              <span>{search.trim() ? "可输入 PT 单号、内部 ID 或标题关键词。" : "可以切换状态、工单类型或迭代查看其他内容。"}</span>
             </div>
           )}
         </div>
