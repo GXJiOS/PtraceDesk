@@ -20,7 +20,7 @@ interface MyWorkitemsProps {
   items: DashboardItem[];
   heading?: string;
   description?: string;
-  sortBy?: "schedule" | "created-desc";
+  sortBy?: "schedule" | "id-desc";
   focusedItemId?: string;
   onFocus: (item: DashboardItem) => void;
   onDetails: (item: DashboardItem) => void;
@@ -43,15 +43,12 @@ function childSprintKey(item: DashboardItem) {
   return NO_CHILD_SPRINT;
 }
 
-function compareItemsByCreationTimeDesc(a: DashboardItem, b: DashboardItem) {
-  const aCreatedAt = a.createTime ? Date.parse(a.createTime) : Number.NaN;
-  const bCreatedAt = b.createTime ? Date.parse(b.createTime) : Number.NaN;
-  const aHasCreationTime = Number.isFinite(aCreatedAt);
-  const bHasCreationTime = Number.isFinite(bCreatedAt);
+function compareItemsByIdDesc(a: DashboardItem, b: DashboardItem) {
+  const aId = /^\d+$/.test(a.id) ? BigInt(a.id) : null;
+  const bId = /^\d+$/.test(b.id) ? BigInt(b.id) : null;
 
-  if (aHasCreationTime !== bHasCreationTime) return aHasCreationTime ? -1 : 1;
-  if (!aHasCreationTime) return 0;
-  return bCreatedAt - aCreatedAt;
+  if (aId === null || bId === null) return aId === bId ? 0 : aId === null ? 1 : -1;
+  return aId === bId ? 0 : aId > bId ? -1 : 1;
 }
 
 export function MyWorkitems({
@@ -162,7 +159,7 @@ export function MyWorkitems({
 
   const filteredItems = useMemo(() => matchingItems
     .filter((item) => status === "all" || item.statusKind === status)
-    .sort(sortBy === "created-desc" ? compareItemsByCreationTimeDesc : compareItemsBySchedule),
+    .sort(sortBy === "id-desc" ? compareItemsByIdDesc : compareItemsBySchedule),
   [matchingItems, sortBy, status]);
 
   useEffect(() => {

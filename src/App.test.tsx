@@ -1057,7 +1057,7 @@ describe("PtraceDesk core interactions", () => {
     expect(list.querySelectorAll("article.work-row")).toHaveLength(1);
   });
 
-  it.each(["我的工单", "别人指派的", "我指派的"])("sorts %s by creation time with the newest first", async (destination) => {
+  it.each(["我的工单", "别人指派的", "我指派的"])("sorts %s by numeric internal ID descending", async (destination) => {
     const user = userEvent.setup();
     const outgoing = destination === "我指派的";
     const identity = {
@@ -1068,36 +1068,25 @@ describe("PtraceDesk core interactions", () => {
     window.localStorage.setItem("ptracedesk-data-cache-v1", JSON.stringify({
       products: [{ id: "project-a", name: "项目 A" }],
       workitems: [
-        {
-          id: "missing-created-at",
-          productId: "project-a",
-          subject: "缺少创建时间",
-          ...identity,
-        },
-        {
-          id: "older",
-          productId: "project-a",
-          subject: "较早创建",
-          ...identity,
-          createTime: "2026-09-01T09:00:00+08:00",
-          plannedEndTime: "2026-09-02T18:00:00+08:00",
-        },
-        {
-          id: "newest",
-          productId: "project-a",
-          subject: "最新创建",
-          ...identity,
-          createTime: "2026-09-03T18:00:00+08:00",
-          plannedEndTime: "2026-09-10T18:00:00+08:00",
-        },
-        {
-          id: "invalid-created-at",
-          productId: "project-a",
-          subject: "创建时间无效",
-          ...identity,
-          createTime: "invalid",
-        },
-      ],
+        { id: "7408", workitemNo: "PT-7380", createTime: "2026-09-01T09:00:00+08:00" },
+        { id: "7369", workitemNo: "PT-7341", createTime: "2026-09-03T18:00:00+08:00" },
+        { id: "7370", workitemNo: "PT-7342", createTime: "2026-09-03T18:00:00+08:00" },
+        { id: "7366", workitemNo: "PT-7338", createTime: "invalid" },
+        { id: "7367", workitemNo: "PT-7339" },
+        { id: "7368", workitemNo: "PT-7340" },
+        { id: "7364", workitemNo: "PT-7336" },
+        { id: "7365", workitemNo: "PT-7337" },
+        { id: "9", workitemNo: "PT-9000" },
+        { id: "10", workitemNo: "PT-1" },
+        { id: "9007199254740992" },
+        { id: "9007199254740993" },
+        { id: "invalid-id" },
+      ].map((item) => ({
+        ...item,
+        productId: "project-a",
+        subject: `内部 ID ${item.id}`,
+        ...identity,
+      })),
       syncedAt: "2026-09-04T10:00:00+08:00",
     }));
     render(<App />);
@@ -1106,10 +1095,19 @@ describe("PtraceDesk core interactions", () => {
 
     const rows = [...screen.getByRole("tabpanel").querySelectorAll("article.work-row")];
     expect(rows.map((row) => row.querySelector(".work-copy strong")?.textContent)).toEqual([
-      "最新创建",
-      "较早创建",
-      "缺少创建时间",
-      "创建时间无效",
+      "内部 ID 9007199254740993",
+      "内部 ID 9007199254740992",
+      "内部 ID 7408",
+      "内部 ID 7370",
+      "内部 ID 7369",
+      "内部 ID 7368",
+      "内部 ID 7367",
+      "内部 ID 7366",
+      "内部 ID 7365",
+      "内部 ID 7364",
+      "内部 ID 10",
+      "内部 ID 9",
+      "内部 ID invalid-id",
     ]);
   });
 

@@ -128,7 +128,7 @@ export function App() {
           <MyWorkitems
             key="queue"
             items={dashboard.snapshot.items}
-            sortBy="created-desc"
+            sortBy="id-desc"
             focusedItemId={focusedItem?.id}
             onFocus={focusItem}
             onDetails={setDetailItem}
@@ -137,7 +137,7 @@ export function App() {
           <MyWorkitems
             key="assigned-by-others"
             items={dashboard.snapshot.assignedByOthersItems}
-            sortBy="created-desc"
+            sortBy="id-desc"
             heading="别人指派给我的工单"
             description="查看当前项目范围内由其他人创建并指派给你的工单。"
             focusedItemId={focusedItem?.id}
@@ -148,7 +148,7 @@ export function App() {
           <MyWorkitems
             key="created"
             items={dashboard.snapshot.createdForOthersItems}
-            sortBy="created-desc"
+            sortBy="id-desc"
             heading="我指派的工单"
             description="查看当前项目范围内由你创建并指派给其他人的工单。"
             focusedItemId={focusedItem?.id}
